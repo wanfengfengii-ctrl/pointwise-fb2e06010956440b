@@ -24,9 +24,13 @@ python3.11 -B verify.py
 python3.11 -B demo.py
 ```
 
-verify发现并执行全部tests/test_*.py，断言失败返回非零。
+verify发现并执行全部tests/test_*.py（含连通链），随后执行
+connectivity_cases.py --memory内存验收链；断言失败返回非零。
 demo默认在测试临时目录建库，实际接纳样例、发布、登记更正、重开并导出旧成果；
 它用Fraction从JSON证据独立复算，然后输出POINTWISE_SCENARIO单行JSON。
+随后demo再演示连通链：偏移2的旧修订拒绝平移(1,0,0)，加入偏移3键的新修订
+接纳同一平移，关闭重开后读取不漂移，并在离库后仅用json、hashlib核验
+两份导出证据，输出第二条POINTWISE_SCENARIO。
 不需要安装、联网或准备数据。运行清单见.pointwise-runtime.json。
 
 对已有数据库演示指定修订：
@@ -110,6 +114,56 @@ ASCII字节；摘要不包含任务ID、成果ID、时间或当前指针。
 不会调用产品的矩阵、几何或摘要函数。导出前验证原始与规范来源一致，
 并验证原子、键的逐项覆盖和数值。
 
+## 周期像连通成果（connectivity-v1）
+
+Tasks(archive).run_connectivity(product_id,revision,queries)返回持久成果整数ID；
+产品、修订、成果ID的合法性和缺失语义沿用V1。仅本加工要求所引修订至多16原子、
+32键，不限制接纳、几何加工或历史成果。queries为0～16项的list，每项恰含
+u、v、translation；u、v须为该修订原子ID；translation为三个严格Python整数
+构成的list或tuple，不接受bool、Fraction、浮点或有理数对，整数大小不另作限制。
+空查询合法；空原胞仅可接收空查询；重复查询逐项保留，不合并、不排序。
+非法查询、端点或规模超限抛ValueError，整次不新增任务或成果。
+
+原键(id,u,v,t)在每个n∈Z³处连接(u,n)与(v,n+t)，允许正反向行走；反向仍用
+同一原键ID，贡献相反偏移和负使用次数，不改V1有向位移与键身份语义。
+逐项精确判断(u,0)到(v,translation)是否存在有限走向：在有限无向图连通分量内
+取生成树，树路径给出基础偏移，剩余偏移须落在弦环偏移生成的整数格上；
+可解性由Smith标准型精确整数消元判定，不以实数/有理数张成、浮点容差或
+固定展开窗口代替整数可达性，也不求最短路。仅有一个原子u和键a=(u,u,(2,0,0))
+时平移(1,0,0)不可达、(2,0,0)可达；加入独立键b=(u,u,(3,0,0))后(1,0,0)可达，
+证据可为{"a":-1,"b":1}。
+
+read对新类型返回恰含source、answers的独立字典；source恰含product_id、
+revision、digest、calculation，calculation为connectivity-v1，digest仍是
+完整规范cell的既有摘要。answers按输入顺序排列，每项恰含query、reachable、
+coefficients；query为独立规范查询字典，translation统一为list。
+不可达时coefficients为None；可达时为原键ID到非零严格整数的dict，
+不记零项，没有净使用的键时用空字典。证据任选，不要求最短、唯一或最小系数。
+系数是原键正向净使用次数，须满足：u、v在原胞有限无向图同一连通分量
+（孤立原子自身也是分量）；每个出现的键ID都属于该分量；每个原子系数的
+流入减流出等于它是v的指示量减去它是u的指示量，自像键在端点收支上相消；
+所有键offset乘系数后的三维整数和恰为translation。
+
+### 表示、原键证据及固定成果交接不变量
+
+- 表示：连通任务与成果沿用tasks/results/result_bodies三表，与V1共用
+  一个成果ID序列；tasks.calculation的CHECK放宽为
+  ('primitive-v1','connectivity-v1')。打开V1库时在初始化事务内重建
+  tasks表并保留全部行，user_version保持1；旧修订、当前指针、几何成果
+  与成果ID不变，重建后foreign_key_check为空，重复打开不重复迁移。
+- 成果体payload为{"version":1,"result":{source,answers}}，完整保存
+  源修订绑定、规范查询、布尔结论与整数系数证据。Results.read只解码
+  持久成果，不重新求解；Results.export只核验原始与规范来源一致性、
+  摘要、头体绑定及正例证据，不调用连通求解器重新生成结论。
+- 任务、成果头和成果体在同一事务原子发布；计算或发布异常原样传播，
+  不留本次任务或部分成果，旧成果不变。更正来源、修改原查询或返回
+  容器、关闭重开均不得改变旧成果；离库核账只需导出包，不打开数据库。
+- export包恰含format、version、source、result：format为
+  crystal-connectivity-evidence、version为整数1；source沿用V1导出的
+  product_id、revision、digest、完整规范cell和raw_cell；result与
+  新类型read返回的完整字典相同，布尔、整数和None用原生JSON表示。
+  V1导出格式及既有值相等语义不变。
+
 ## 错误与失败边界
 
 非法产品、结构、数值、单位和参数抛ValueError。
@@ -129,11 +183,16 @@ archive.connection是底层SQLite连接；外部SQL破坏数据不属于正常�
 周期图及核账：bonds/periodic_graph/bond_geometry/bond_audit。
 修订：archive/revision_store/revision_codec/schema/database。
 成果：tasks/executor/results/export/result_store/result_codec。
-所有24个模块均接入公开API，输入和结果值对象使用不可变元组与冻结记录。
+连通：connectivity_queries/connectivity_graph/connectivity_solver/
+smith_normal_form/connectivity_result/connectivity_audit。
+所有30个模块均接入公开API，输入和结果值对象使用不可变元组与冻结记录。
 
 N1、N3在test_intake；N2在test_geometry；N4、N5在test_bonds；
 N6在test_tasks；N7在test_revisions；N8在test_export。
 test_codec补充相同业务边界的精度、完整字段和模式版本验证。
+test_connectivity覆盖连通链：手算样例与独立证书核账、耦合整数格与大数
+Bezout、身份/方向、输入与规模整批拒绝、发布失败回滚、成果固定与重开、
+离库证据核账、V1库迁移接纳新任务、连通codec边界及Smith标准型性质。
 完整套件还覆盖固定seed=1729的有限三角晶格、左右手晶格、
 真实发布/更正中途失败、大整数有理数、重复初始化及修改返回容器后重开。
 测试创建的数据库仅位于测试临时目录，结束后清理。
